@@ -35,8 +35,8 @@ const TANK2_LEFT_KEY: KeyCode = KeyCode::KeyS;
 const TANK2_SHOOT_KEY: KeyCode = KeyCode::KeyQ;
 
 const TANK_SIZE: Vec3 = Vec3::new(40.0,25.0,0.0);
-const TANK_SPEED: f32 = 1.0;
-const TANK_TURNING_SPEED: f32 = -0.05;
+const TANK_SPEED: f32 = 60.0;
+const TANK_TURNING_SPEED: f32 = -2.0;
 
 const WALL_COLOR: Color = Color::BLACK;
 // const WALL_SIZE TODO -> fixed for now I guess
@@ -44,7 +44,7 @@ const WALL_COLOR: Color = Color::BLACK;
 const BULLET_COLOR: Color = Color::GRAY;
 const BULLET_RADIUS: f32 = 5.0;
 // const BULLET_LIFETIME TODO
-const BULLET_SPEED: f32 = 1.2;
+const BULLET_SPEED: f32 = 72.0;
 
 // const ARENA_DIM
 
@@ -176,6 +176,7 @@ fn shoot_bullet(
     tank_pos: &Vec3,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
+    time: &Res<Time>,
 ) {
 
     let circ_mesh = Mesh2dHandle(meshes.add(Circle { radius: BULLET_RADIUS }));
@@ -209,30 +210,28 @@ fn move_tank(
     tank: &Tank,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
+    time: &Res<Time>,
 ) {
 
     // TODO once implemented collision, only allow to turn or move if movement
     //  won't cause collision with wall
     if keys.pressed(tank.right_key) && !keys.pressed(tank.left_key) {
-        transform.rotate_z(TANK_TURNING_SPEED);
+        transform.rotate_z(TANK_TURNING_SPEED * time.delta_seconds());
     } else if keys.pressed(tank.left_key) && !keys.pressed(tank.right_key) {
-        transform.rotate_z(-TANK_TURNING_SPEED);
+        transform.rotate_z(-TANK_TURNING_SPEED * time.delta_seconds());
     }
     
     let angle = transform.rotation.to_euler(EulerRot::ZYX).0;
     if keys.pressed(tank.fwd_key) && !keys.pressed(tank.bwd_key) {
-        let new_x = transform.translation.x + angle.cos()*TANK_SPEED;
-        let new_y = transform.translation.y + angle.sin()*TANK_SPEED;
-        transform.translation = Vec3::new(new_x,new_y,transform.translation.z);
-        
+        transform.translation.x += angle.cos() * TANK_SPEED * time.delta_seconds();
+        transform.translation.y += angle.sin() * TANK_SPEED * time.delta_seconds();        
     } else if keys.pressed(tank.bwd_key) && !keys.pressed(tank.fwd_key) {
-        let new_x = transform.translation.x + angle.cos()*(-TANK_SPEED);
-        let new_y = transform.translation.y + angle.sin()*(-TANK_SPEED);
-        transform.translation = Vec3::new(new_x,new_y,transform.translation.z);
+        transform.translation.x += angle.cos() * (-TANK_SPEED) * time.delta_seconds();
+        transform.translation.y += angle.sin() * (-TANK_SPEED) * time.delta_seconds();  
     }
 
     if keys.just_pressed(tank.shoot_key) {
-        shoot_bullet(commands, &angle, &transform.translation, meshes, materials);
+        shoot_bullet(commands, &angle, &transform.translation, meshes, materials, time);
     }
 
 }
@@ -244,21 +243,20 @@ fn handle_keypresses(
     mut tanks_query: Query<(&mut Transform,  &Tank)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    time: Res<Time>,
 ) {
     for (mut transform, tank) in &mut tanks_query {
-        move_tank(&mut commands, &keys, &mut transform, tank, &mut meshes, &mut materials);
+        move_tank(&mut commands, &keys, &mut transform, tank, &mut meshes, &mut materials, &time);
     }
 }
 
 fn apply_velocity(
     mut query: Query<(&mut Transform, &Velocity)>,
-    // time: Res<Time>,
+    time: Res<Time>,
 ) {
     for (mut transform, velocity) in &mut query {
         // TODO add time eventually
-        // transform.translation.x += velocity.x * time.delta_seconds();
-        // transform.translation.y += velocity.y * time.delta_seconds();
-        transform.translation.x += velocity.x;
-        transform.translation.y += velocity.y;
+        transform.translation.x += velocity.x * time.delta_seconds();
+        transform.translation.y += velocity.y * time.delta_seconds();
     }
 }
