@@ -4,7 +4,9 @@
 
 use bevy::
 { 
-    input::{keyboard::{Key, KeyboardInput}, ButtonState}, prelude::*, winit::WinitSettings
+    input::{keyboard::{Key, KeyboardInput}, ButtonState}, 
+    prelude::*,
+    sprite::{MaterialMesh2dBundle, Mesh2dHandle}
 };
 
 #[cfg(feature = "debug")]
@@ -40,10 +42,9 @@ const WALL_COLOR: Color = Color::BLACK;
 // const WALL_SIZE TODO -> fixed for now I guess
 
 const BULLET_COLOR: Color = Color::GRAY;
-const BULLET_DIAMETER: f32 = 20.0;
+const BULLET_RADIUS: f32 = 5.0;
 // const BULLET_LIFETIME TODO
 const BULLET_SPEED: f32 = 1.2;
-const BULLET_SIZE: Vec3 = Vec3::new(10.0,10.0,0.0);
 
 // const ARENA_DIM
 
@@ -75,7 +76,8 @@ struct Bullet {
 #[derive(Bundle)]
 struct BulletBundle {
     bullet: Bullet,
-    sprite: SpriteBundle,
+    // sprite: MaterialMesh2dBundle<Handle<Color>>,
+    sprite: MaterialMesh2dBundle<ColorMaterial>,
     velocity: Velocity,
 }
 
@@ -162,28 +164,35 @@ fn setup(
 
 }
 
+// TODO question, what is the difference beween having the mut on the right and
+//  the mut on the left?
+
+
+// TODO hmmm probably bad use of ecs, probably want a subclass of things that 
+//  can shoot/be shot. Should not ideally pass params like this
 fn shoot_bullet(
     commands: &mut Commands,
     angle: &f32,
     tank_pos: &Vec3,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
-    let start_x = tank_pos.x + angle.cos() * ((TANK_SIZE.x / 2.0) + BULLET_DIAMETER);
-    let start_y = tank_pos.y + angle.sin() * ((TANK_SIZE.x / 2.0) + BULLET_DIAMETER);
+
+    let circ_mesh = Mesh2dHandle(meshes.add(Circle { radius: BULLET_RADIUS }));
+    let color_material = materials.add(BULLET_COLOR);
+
+    let start_x = tank_pos.x + angle.cos() * ((TANK_SIZE.x / 2.0) + BULLET_RADIUS);
+    let start_y = tank_pos.y + angle.sin() * ((TANK_SIZE.x / 2.0) + BULLET_RADIUS);
 
     // TODO turn this into a ball?
     commands.spawn(
         BulletBundle {
             bullet: Bullet {},
-            sprite: SpriteBundle {
+            sprite: MaterialMesh2dBundle {
+                mesh: circ_mesh,
+                material: color_material,
                 transform: Transform {
-                    // TODO fix starting position
-                    translation: Vec3::new(start_x,start_y,0.0),
-                    // rotation: Quat::from_rotation_z(*angle),
-                    scale: BULLET_SIZE,
-                    ..default()
-                },
-                sprite: Sprite {
-                    color: BULLET_COLOR,
+                    translation: Vec3::new(start_x, start_y, 0.0),
                     ..default()
                 },
                 ..default()
@@ -197,7 +206,9 @@ fn move_tank(
     commands: &mut Commands,
     keys: &Res<ButtonInput<KeyCode>>,
     transform: &mut Transform,
-    tank: &Tank, // WTF is this type?
+    tank: &Tank,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
 
     // TODO once implemented collision, only allow to turn or move if movement
@@ -221,7 +232,7 @@ fn move_tank(
     }
 
     if keys.just_pressed(tank.shoot_key) {
-        shoot_bullet(commands, &angle, &transform.translation);
+        shoot_bullet(commands, &angle, &transform.translation, meshes, materials);
     }
 
 }
@@ -231,9 +242,11 @@ fn handle_keypresses(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     mut tanks_query: Query<(&mut Transform,  &Tank)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     for (mut transform, tank) in &mut tanks_query {
-        move_tank(&mut commands, &keys, &mut transform, tank);
+        move_tank(&mut commands, &keys, &mut transform, tank, &mut meshes, &mut materials);
     }
 }
 
