@@ -1,3 +1,21 @@
+/*
+!!!!!!!!WARNING!!!!!!!!
+
+DOG SHIT QUALITY CODE INCOMING
+
+Before doing this project, I knew nothing about both rust and game engines, 
+and once I actually did figure out a bit about both, I was in too much of a 
+rush to properly structure the project. As such, we now have a 1k line file 
+full of spaghetti code and a bunch of TODO statements...
+
+Have fun!
+
+*/
+
+
+
+
+
 
 use bevy::
 { 
@@ -30,8 +48,7 @@ const WINDOW_SIZE: (f32,f32) = (800.0, 600.0);
 
 const ARENA_DIM: (usize, usize) = (12,9);
 
-// TODO
-// const GAME_RESTART_WAIT
+const GAME_RESTART_WAIT: Duration = Duration::from_secs(3);
 
 const BACKGROUND_COLOR: Color = Color::WHITE;
 
@@ -63,11 +80,20 @@ const TANK2_SHOOT_KEY: KeyCode = KeyCode::KeyQ;
 const TANK_SIZE: Vec3 = Vec3::new(30.0,22.0,0.0);
 const TANK_SPEED: f32 = 110.0;
 const TANK_TURNING_SPEED: f32 = -4.0;
+const DEAD_TANK_COLOR: Color = Color::BLUE;
+const TANK_BULLET_COUNT: usize = 5;
 
 const BULLET_COLOR: Color = Color::GRAY;
 const BULLET_RADIUS: f32 = 5.0;
-const BULLET_EXPIRATION: Duration = Duration::from_secs(12);
+const BULLET_EXPIRATION: Duration = Duration::from_secs(17);
 const BULLET_SPEED: f32 = 120.0;
+
+
+#[derive(Resource)]
+struct GlobalRestart {
+    timer: Timer,
+    restart: bool,
+}
 
 
 #[derive(Component, Deref, DerefMut)]
@@ -89,6 +115,8 @@ struct Tank {
     right_key: KeyCode,
     left_key: KeyCode,
     shoot_key: KeyCode,
+    tank_id: usize,
+    bullets_remaining: usize,
 }
 
 #[derive(Bundle)]
@@ -99,7 +127,9 @@ struct TankBundle {
 
 // TODO bullet has limited lifetime
 #[derive(Component)]
-struct Bullet;
+struct Bullet {
+    tank_id: usize,
+}
 
 #[derive(Bundle)]
 struct BulletBundle {
@@ -144,15 +174,17 @@ fn main() {
     app.add_plugins(WorldInspectorPlugin::new());
 
     app
+    .insert_resource(GlobalRestart {restart:false, timer: Timer::new(Duration::from_secs(0), TimerMode::Once)})
     .add_event::<FreshRound>()
     .add_systems(Update, bevy::window::close_on_esc)
     .add_systems(Startup, setup)
     // TODO this should not go here we should probably just ping the exception in
     //  startup
-    .add_systems(Update, (clear_prev_round,create_fresh_round).chain())
+    .add_systems(Update, (handle_restarting_game, clear_prev_round,create_fresh_round).chain())
     .add_systems(Update, handle_keypresses)
+    .add_systems(Update, game_end_condition_handler)
     .add_systems(Update, (bullet_wall_collision_handler, apply_velocity).chain())
-    .add_systems(Update, handle_expiring_entities)
+    .add_systems(Update, handle_expiring_bullets)
     .run()
 }
 
@@ -172,6 +204,8 @@ fn setup(
                 right_key: TANK1_RIGHT_KEY,
                 left_key: TANK1_LEFT_KEY,
                 shoot_key: TANK1_SHOOT_KEY,
+                tank_id: 1,
+                bullets_remaining: TANK_BULLET_COUNT,
             },
             sprite: SpriteBundle {
                 transform: Transform {
@@ -196,6 +230,8 @@ fn setup(
                 right_key: TANK2_RIGHT_KEY,
                 left_key: TANK2_LEFT_KEY,
                 shoot_key: TANK2_SHOOT_KEY,
+                tank_id: 2,
+                bullets_remaining: TANK_BULLET_COUNT,
             },
             sprite: SpriteBundle {
                 transform: Transform {
@@ -225,10 +261,19 @@ fn clear_prev_round(
         return;
     }
 
-    for mut entity in mut_query.iter() {
+    for entity in mut_query.iter() {
         commands.entity(entity).despawn()
     }
 
+}
+
+fn handle_restarting_game(
+    mut fresh_round_event_writer: EventWriter<FreshRound>,
+    global_restart: Res<GlobalRestart>,
+) {
+    if global_restart.restart && global_restart.timer.finished() {
+        fresh_round_event_writer.send(FreshRound);
+    }
 }
 
 fn generate_tank_starts(
@@ -478,7 +523,7 @@ fn create_fresh_round(
     // Need tanks so we can move them first round
     // TODO?
     // mut tanks_query: Query<(&mut Transform, &Tank)>,
-    mut tanks_query: Query<&mut Transform, With<Tank>>,
+    mut tanks_query: Query<(&mut Transform, &mut Sprite, &mut Tank)>,
     fresh_round_event: EventReader<FreshRound>,
 ) {
     if fresh_round_event.is_empty() {
@@ -560,9 +605,7 @@ fn create_fresh_round(
     }
 
     let mut tank_positions_idx = 0;
-    // TODO
-    // for (mut transform,_) in &mut tanks_query {
-    for mut transform in &mut tanks_query {
+    for (mut transform, mut sprite, mut tank) in &mut tanks_query {
         // Calculate screen coordinate based on square coordinate
         let x_coord = tank_positions[tank_positions_idx].0;
         let y_coord = tank_positions[tank_positions_idx].1;
@@ -574,20 +617,38 @@ fn create_fresh_round(
         transform.translation = Vec3::new(x_pos,y_pos,0.0);
         transform.rotation = Quat::from_rotation_z(rng.gen_range(-PI..PI));
         tank_positions_idx += 1;
+
+        tank.bullets_remaining = TANK_BULLET_COUNT;
+
+        // TODO shitty hard casing, idk if can change though...
+        if tank.tank_id == 1 {
+            sprite.color = TANK1_COLOR;
+        } else if tank.tank_id == 2 {
+            sprite.color = TANK2_COLOR;
+        } else {
+            panic!();
+        }
     }
 
 }
 
 
-fn handle_expiring_entities(
+fn handle_expiring_bullets(
     mut commands: Commands,
-    mut expiration_query: Query<(Entity, &mut Expiration)>,
+    mut expiration_query: Query<(Entity, &mut Expiration, &Bullet)>,
+    mut tank_query: Query<&mut Tank>,
     time: Res<Time>,
 ) {
-    for (entity, mut expiration) in &mut expiration_query {
+    for (entity, mut expiration, bullet) in &mut expiration_query {
         expiration.timer.tick(time.delta());
 
         if expiration.timer.finished() {
+            for mut tank in &mut tank_query {
+                if tank.tank_id == bullet.tank_id {
+                    tank.bullets_remaining += 1;
+                }
+            }
+
             commands.entity(entity).despawn();
         }
     }
@@ -606,19 +667,25 @@ fn shoot_bullet(
     tank_pos: &Vec3,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
+    tank: &mut Tank,
 ) {
+    if tank.bullets_remaining == 0 {
+        return
+    }
 
     let circ_mesh = Mesh2dHandle(meshes.add(Circle { radius: BULLET_RADIUS }));
     let color_material = materials.add(BULLET_COLOR);
 
     // TODO could potentially be redone to use rotating point api
-    let start_x = tank_pos.x + angle.cos() * ((TANK_SIZE.x / 2.0) + BULLET_RADIUS);
-    let start_y = tank_pos.y + angle.sin() * ((TANK_SIZE.x / 2.0) + BULLET_RADIUS);
+    let start_x = tank_pos.x + angle.cos() * ((TANK_SIZE.x / 2.0) + 2.0 * BULLET_RADIUS);
+    let start_y = tank_pos.y + angle.sin() * ((TANK_SIZE.x / 2.0) + 2.0 * BULLET_RADIUS);
 
-    // TODO turn this into a ball?
+    tank.bullets_remaining -= 1;
     commands.spawn(
         BulletBundle {
-            bullet: Bullet,
+            bullet: Bullet {
+                tank_id: tank.tank_id,
+            },
             sprite: MaterialMesh2dBundle {
                 mesh: circ_mesh,
                 material: color_material,
@@ -641,7 +708,7 @@ fn move_tank(
     commands: &mut Commands,
     keys: &Res<ButtonInput<KeyCode>>,
     transform: &mut Transform,
-    tank: &Tank,
+    tank: &mut Tank,
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
     time: &Res<Time>,
@@ -694,7 +761,7 @@ fn move_tank(
 
     let angle = transform.rotation.to_euler(EulerRot::ZYX).0;
     if keys.just_pressed(tank.shoot_key) {
-        shoot_bullet(commands, &angle, &transform.translation, meshes, materials);
+        shoot_bullet(commands, &angle, &transform.translation, meshes, materials, tank);
     }
 
 }
@@ -703,14 +770,14 @@ fn move_tank(
 fn handle_keypresses(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
-    mut tanks_query: Query<(&mut Transform,  &Tank)>,
+    mut tanks_query: Query<(&mut Transform, &mut Tank)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     time: Res<Time>,
     walls_query: Query<(&Transform, &Wall), Without<Tank>>,
 ) {
-    for (mut transform, tank) in &mut tanks_query {
-        move_tank(&mut commands, &keys, &mut transform, tank, &mut meshes, &mut materials, &time, &walls_query);
+    for (mut transform, mut tank) in &mut tanks_query {
+        move_tank(&mut commands, &keys, &mut transform, &mut tank, &mut meshes, &mut materials, &time, &walls_query);
     }
 }
 
@@ -872,12 +939,40 @@ fn bullet_wall_collision_handler(
 
 
 
-fn bullet_tank_collision_handler(
-    mut bullets_query: Query<&Transform, With<Bullet>>,
-    mut tanks_query: Query<&mut Transform, With<Tank>>,
+fn game_end_condition_handler(
+    bullets_query: Query<&Transform, With<Bullet>>,
+    mut tanks_query: Query<(&Transform, &mut Sprite), With<Tank>>,
+    fresh_round_event_reader: EventReader<FreshRound>,
+    mut global_restart: ResMut<GlobalRestart>,
+    timer: Res<Time>,
 ) {
+    global_restart.timer.tick(timer.delta());
 
+    if !fresh_round_event_reader.is_empty() {
+        global_restart.restart = false;
+    }
 
+    if global_restart.restart {
+        return
+    }
+
+    for (tank_transform, mut tank_sprite) in &mut tanks_query {
+        for bullets_transform in &bullets_query {
+
+            if circle_intersects_rect(
+                Vec2::new(tank_transform.translation.x, tank_transform.translation.y), 
+                Vec2::new(tank_transform.scale.x, tank_transform.scale.y), 
+                tank_transform.rotation.to_euler(EulerRot::ZXY).0, 
+                Vec2::new(bullets_transform.translation.x, bullets_transform.translation.y), 
+                BULLET_RADIUS) {
+
+                tank_sprite.color = DEAD_TANK_COLOR;
+
+                global_restart.restart = true;
+                global_restart.timer = Timer::new(GAME_RESTART_WAIT, TimerMode::Once);
+            }
+        }
+    }
     // all this should do is hide the dead tank, wait 3 secs, and send restart
     //  signal
 }
