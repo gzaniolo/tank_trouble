@@ -95,10 +95,7 @@ struct TankBundle {
 
 // TODO bullet has limited lifetime
 #[derive(Component)]
-struct Bullet {
-    vert_cooldown: Duration,
-    horz_cooldown: Duration,
-}
+struct Bullet;
 
 #[derive(Bundle)]
 struct BulletBundle {
@@ -599,10 +596,7 @@ fn shoot_bullet(
     // TODO turn this into a ball?
     commands.spawn(
         BulletBundle {
-            bullet: Bullet {
-                vert_cooldown: Duration::from_secs(0),
-                horz_cooldown: Duration::from_secs(0),
-            },
+            bullet: Bullet,
             sprite: MaterialMesh2dBundle {
                 mesh: circ_mesh,
                 material: color_material,
@@ -708,18 +702,6 @@ fn rotate_point(point: Vec2, angle: f32, rot_center: Vec2) -> Vec2 {
     return temp2 + rot_center;
 }
 
-#[derive(Debug, PartialEq)]
-enum RectSide {
-    NoIntersect,
-    TopLeft,
-    Top,
-    TopRight,
-    Right,
-    BottomRight,
-    Bottom,
-    BottomLeft,
-    Left,
-}
 
 fn circle_intersects_rect(
     rect_center: Vec2,
@@ -748,104 +730,46 @@ fn circle_intersects_rect(
     return corner_distance_sq <= circle_rad.powf(2.0);
 }
 
-fn circle_intersects_wall_side(
-    rect_center: Vec2,
-    rect_dims: Vec2,
-    rect_angle: f32,
+
+fn circle_intersects_wall_bounce(
+    wall_center: Vec2,
+    wall_width: f32,
+    wall_vertical: bool,
     circle_center: Vec2,
     circle_rad: f32,
-) -> RectSide {
-    let circle_center_rot = rotate_point(circle_center, rect_angle, rect_center);
+) -> bool {
 
-    let circle_dist = Vec2::new(
-        circle_center_rot.x - rect_center.x,
-        circle_center_rot.y - rect_center.y);
-
-    
-    if circle_dist.x.abs() > (rect_dims.x/2.0) + circle_rad {return RectSide::NoIntersect}
-
-    if circle_dist.y.abs() > (rect_dims.y/2.0) + circle_rad {return RectSide::NoIntersect}
-
-
-    // NOTE: putting y before x is a shitty hack that only works becuase walls
-    //  are far thinner than they are wide. 
-    if circle_dist.y.abs() <= (rect_dims.y/2.0) {
-        if circle_dist.x < 0.0 {return RectSide::Left}
-        else {return RectSide::Right}
-    }
-
-    if circle_dist.x.abs() <= (rect_dims.x/2.0) {
-        if circle_dist.y < 0.0 {return RectSide::Bottom}
-        else {return RectSide::Top}
-    }
-
-    let corner_distance_sq = (circle_dist.x.abs() - (rect_dims.x/2.0)).powf(2.0) + 
-        (circle_dist.y.abs() - (rect_dims.y/2.0)).powf(2.0);
-    
-    if corner_distance_sq <= circle_rad.powf(2.0) {
-        if circle_dist.x < 0.0 {
-            if circle_dist.y < 0.0 {return RectSide::TopLeft} 
-            else {return RectSide::BottomLeft}
-        } else {
-            if circle_dist.y < 0.0 {return RectSide::TopRight}
-            else {return RectSide::BottomRight}
-        }
+    if wall_vertical {
+        return ((circle_center.y - wall_center.y).abs() < (wall_width/2.0)) 
+            && ((circle_center.x - wall_center.x).abs() <= circle_rad)
     } else {
-        return RectSide::NoIntersect
+        return ((circle_center.x - wall_center.x).abs() < (wall_width/2.0))
+            && ((circle_center.y - wall_center.y).abs() <= circle_rad)
     }
 }
 
-fn bullet_cooldown_handler(
-    mut bullets_query: Query<&mut Bullet>,
-    time: &Res<Time>,
-) {
-    for mut bullet in &mut bullets_query {
-        bullet.horz_cooldown -= time.delta();
-        bullet.vert_cooldown -= time.delta();
-    }
-}
+
 
 fn bullet_wall_collision_handler(
     walls_query: Query<(&Transform, &Wall)>,
-    mut bullets_query: Query<(&Transform, &mut Velocity, &mut Bullet)>,
+    mut bullets_query: Query<(&Transform, &mut Velocity), With<Bullet>>,
 ) {
-    for (bullet_trans, mut bullet_velo, mut bullet) in &mut bullets_query {
+    for (bullet_trans, mut bullet_velo) in &mut bullets_query {
         for (wall_trans, wall) in &walls_query {
-            let temp = circle_intersects_wall_side(
+            
+            if circle_intersects_wall_bounce(
                 Vec2::new(wall_trans.translation.x, wall_trans.translation.y),
-                Vec2::new(wall_trans.scale.x, wall_trans.scale.y),
-                wall_trans.rotation.to_euler(EulerRot::ZYX).0,
+                wall_trans.scale.x,
+                wall.is_vertical,
                 Vec2::new(bullet_trans.translation.x, bullet_trans.translation.y), 
-                BULLET_RADIUS);
-            if temp != RectSide::NoIntersect {
-                println!("intersected direction {:?}",temp);
+                BULLET_RADIUS) {
+                
+                if wall.is_vertical {
+                    bullet_velo.x = -bullet_velo.x;
+                } else {
+                    bullet_velo.y = -bullet_velo.y;
+                }
             }
-            
-            // Note: Another shitty hack because I forgot we rotated the walls
-            match temp {
-                RectSide::NoIntersect => {},
-                RectSide::Top|RectSide::Bottom => {
-                        if bullet.vert_cooldown <= Duration::from_secs(0) {
-                            if wall.is_vertical {bullet_velo.x = -bullet_velo.x;}
-                            else {bullet_velo.y = -bullet_velo.y;}
-                            bullet.vert_cooldown = Duration::from_millis(500);
-                        }
-                    },
-                RectSide::Right|RectSide::Left => {
-                        if bullet.horz_cooldown <= Duration::from_secs(0) {
-                            if wall.is_vertical {bullet_velo.y = -bullet_velo.y;}
-                            else {bullet_velo.x = -bullet_velo.x;}
-                            bullet.horz_cooldown = Duration::from_millis(500);
-                        }
-                    },
-                RectSide::TopLeft|RectSide::TopRight|
-                RectSide::BottomRight|RectSide::BottomLeft => {
-                        bullet_velo.x = -bullet_velo.x;bullet_velo.y = -bullet_velo.y;
-                        bullet.horz_cooldown = Duration::from_millis(500);
-                        bullet.vert_cooldown = Duration::from_millis(500);
-                    },
-            }
-            
         }
     }
 }
@@ -863,6 +787,15 @@ fn bullet_tank_collision_handler(
 
 
 
+/*
+TODO when need to intersect with tank
+let temp = circle_intersects_wall_side(
+                Vec2::new(wall_trans.translation.x, wall_trans.translation.y),
+                Vec2::new(wall_trans.scale.x, wall_trans.scale.y),
+                wall_trans.rotation.to_euler(EulerRot::ZYX).0,
+                Vec2::new(bullet_trans.translation.x, bullet_trans.translation.y), 
+                BULLET_RADIUS);
+*/
 
 
 
