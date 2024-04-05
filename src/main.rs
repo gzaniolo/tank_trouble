@@ -30,6 +30,9 @@ const WINDOW_SIZE: (f32,f32) = (800.0, 600.0);
 
 const ARENA_DIM: (usize, usize) = (12,9);
 
+// TODO
+// const GAME_RESTART_WAIT
+
 const BACKGROUND_COLOR: Color = Color::WHITE;
 
 const WALL_COLOR: Color = Color::BLACK;
@@ -63,7 +66,7 @@ const TANK_TURNING_SPEED: f32 = -4.0;
 
 const BULLET_COLOR: Color = Color::GRAY;
 const BULLET_RADIUS: f32 = 5.0;
-// const BULLET_LIFETIME TODO
+const BULLET_EXPIRATION: Duration = Duration::from_secs(12);
 const BULLET_SPEED: f32 = 120.0;
 
 
@@ -72,6 +75,11 @@ struct Velocity(Vec2);
 
 #[derive(Component)]
 struct Regenerate;
+
+#[derive(Component)]
+struct Expiration {
+    timer: Timer,
+}
 
 // TODO we will eventually need an id to enforce limited bullets
 #[derive(Component)]
@@ -100,6 +108,7 @@ struct BulletBundle {
     sprite: MaterialMesh2dBundle<ColorMaterial>,
     velocity: Velocity,
     regenerate: Regenerate,
+    expiration: Expiration,
 }
 
 #[derive(Component)]
@@ -143,6 +152,7 @@ fn main() {
     .add_systems(Update, (clear_prev_round,create_fresh_round).chain())
     .add_systems(Update, handle_keypresses)
     .add_systems(Update, (bullet_wall_collision_handler, apply_velocity).chain())
+    .add_systems(Update, handle_expiring_entities)
     .run()
 }
 
@@ -568,6 +578,22 @@ fn create_fresh_round(
 
 }
 
+
+fn handle_expiring_entities(
+    mut commands: Commands,
+    mut expiration_query: Query<(Entity, &mut Expiration)>,
+    time: Res<Time>,
+) {
+    for (entity, mut expiration) in &mut expiration_query {
+        expiration.timer.tick(time.delta());
+
+        if expiration.timer.finished() {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
+
 // TODO question, what is the difference beween having the mut on the right and
 //  the mut on the left?
 
@@ -604,6 +630,9 @@ fn shoot_bullet(
             },
             velocity: Velocity(Vec2::new(angle.cos() * BULLET_SPEED, angle.sin() * BULLET_SPEED)),
             regenerate: Regenerate,
+            expiration: Expiration {
+                timer: Timer::new(BULLET_EXPIRATION, TimerMode::Once),
+            },
         }
     );
 }
@@ -840,6 +869,7 @@ fn bullet_wall_collision_handler(
         }
     }
 }
+
 
 
 fn bullet_tank_collision_handler(
