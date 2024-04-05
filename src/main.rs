@@ -737,14 +737,27 @@ fn circle_intersects_wall_bounce(
     wall_vertical: bool,
     circle_center: Vec2,
     circle_rad: f32,
+    circle_velo: Vec2,
 ) -> bool {
 
     if wall_vertical {
-        return ((circle_center.y - wall_center.y).abs() < (wall_width/2.0)) 
+        if (circle_velo.x > 0.0 && (circle_center.x - wall_center.x < 0.0))
+        || (circle_velo.x < 0.0 && (circle_center.x - wall_center.x > 0.0)) {
+
+            return ((circle_center.y - wall_center.y).abs() < (wall_width/2.0)) 
             && ((circle_center.x - wall_center.x).abs() <= circle_rad)
+        } else {
+            return false;
+        }
     } else {
-        return ((circle_center.x - wall_center.x).abs() < (wall_width/2.0))
+        if (circle_velo.y > 0.0 && (circle_center.y - wall_center.y < 0.0))
+        || (circle_velo.y < 0.0 && (circle_center.y - wall_center.y > 0.0)) {
+        
+            return ((circle_center.x - wall_center.x).abs() < (wall_width/2.0))
             && ((circle_center.y - wall_center.y).abs() <= circle_rad)
+        } else {
+            return false;
+        }
     }
 }
 
@@ -762,7 +775,8 @@ fn bullet_wall_collision_handler(
                 wall_trans.scale.x,
                 wall.is_vertical,
                 Vec2::new(bullet_trans.translation.x, bullet_trans.translation.y), 
-                BULLET_RADIUS) {
+                BULLET_RADIUS,
+                bullet_velo.0) {
                 
                 if wall.is_vertical {
                     bullet_velo.x = -bullet_velo.x;
