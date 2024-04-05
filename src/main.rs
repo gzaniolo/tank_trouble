@@ -1,7 +1,4 @@
 
-
-// commands despawn
-
 use bevy::
 { 
     input::{keyboard::{Key, KeyboardInput}, ButtonState}, 
@@ -60,15 +57,14 @@ const TANK2_RIGHT_KEY: KeyCode = KeyCode::KeyF;
 const TANK2_LEFT_KEY: KeyCode = KeyCode::KeyS;
 const TANK2_SHOOT_KEY: KeyCode = KeyCode::KeyQ;
 
-const TANK_SIZE: Vec3 = Vec3::new(40.0,25.0,0.0);
-const TANK_SPEED: f32 = 60.0;
-const TANK_TURNING_SPEED: f32 = -2.0;
+const TANK_SIZE: Vec3 = Vec3::new(30.0,22.0,0.0);
+const TANK_SPEED: f32 = 110.0;
+const TANK_TURNING_SPEED: f32 = -4.0;
 
 const BULLET_COLOR: Color = Color::GRAY;
 const BULLET_RADIUS: f32 = 5.0;
 // const BULLET_LIFETIME TODO
-const BULLET_SPEED: f32 = 72.0;
-const BULLET_WALL_COOLDOWN: f32 = 0.5;
+const BULLET_SPEED: f32 = 120.0;
 
 
 #[derive(Component, Deref, DerefMut)]
@@ -620,25 +616,54 @@ fn move_tank(
     meshes: &mut ResMut<Assets<Mesh>>,
     materials: &mut ResMut<Assets<ColorMaterial>>,
     time: &Res<Time>,
+    walls_query: &Query<(&Transform, &Wall), Without<Tank>>,
 ) {
+    let mut transform_pending = transform.clone();
 
     // TODO once implemented collision, only allow to turn or move if movement
     //  won't cause collision with wall
     if keys.pressed(tank.right_key) && !keys.pressed(tank.left_key) {
-        transform.rotate_z(TANK_TURNING_SPEED * time.delta_seconds());
+        transform_pending.rotate_z(TANK_TURNING_SPEED * time.delta_seconds());
     } else if keys.pressed(tank.left_key) && !keys.pressed(tank.right_key) {
-        transform.rotate_z(-TANK_TURNING_SPEED * time.delta_seconds());
+        transform_pending.rotate_z(-TANK_TURNING_SPEED * time.delta_seconds());
     }
     
-    let angle = transform.rotation.to_euler(EulerRot::ZYX).0;
+    let angle_pending = transform_pending.rotation.to_euler(EulerRot::ZYX).0;
     if keys.pressed(tank.fwd_key) && !keys.pressed(tank.bwd_key) {
-        transform.translation.x += angle.cos() * TANK_SPEED * time.delta_seconds();
-        transform.translation.y += angle.sin() * TANK_SPEED * time.delta_seconds();        
+        transform_pending.translation.x += angle_pending.cos() * TANK_SPEED * time.delta_seconds();
+        transform_pending.translation.y += angle_pending.sin() * TANK_SPEED * time.delta_seconds();        
     } else if keys.pressed(tank.bwd_key) && !keys.pressed(tank.fwd_key) {
-        transform.translation.x += angle.cos() * (-TANK_SPEED) * time.delta_seconds();
-        transform.translation.y += angle.sin() * (-TANK_SPEED) * time.delta_seconds();  
+        transform_pending.translation.x += angle_pending.cos() * (-TANK_SPEED) * time.delta_seconds();
+        transform_pending.translation.y += angle_pending.sin() * (-TANK_SPEED) * time.delta_seconds();  
     }
 
+    // Check to make sure pending version does not intersect with walls
+    let rect_8_f32 = rect_to_8_f23(transform_pending);
+    let mut intersects = false;
+    for (wall_trans, wall) in walls_query {
+        let wall_line = if wall.is_vertical {
+            (wall_trans.translation.x,
+                wall_trans.translation.y - (wall_trans.scale.x/2.0),
+                wall_trans.translation.x,
+                wall_trans.translation.y + (wall_trans.scale.x/2.0))
+        } else {
+            (wall_trans.translation.x - (wall_trans.scale.x/2.0),
+                wall_trans.translation.y,
+                wall_trans.translation.x + (wall_trans.scale.x/2.0),
+                wall_trans.translation.y)
+        };
+        if rectangle_intersects_line(rect_8_f32, wall_line) {
+            intersects = true;
+            break;
+        }
+    }
+    // If does not intersect with walls, set as real value
+    if !intersects {
+        transform.translation = transform_pending.translation;
+        transform.rotation = transform_pending.rotation;
+    }
+
+    let angle = transform.rotation.to_euler(EulerRot::ZYX).0;
     if keys.just_pressed(tank.shoot_key) {
         shoot_bullet(commands, &angle, &transform.translation, meshes, materials);
     }
@@ -653,9 +678,10 @@ fn handle_keypresses(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     time: Res<Time>,
+    walls_query: Query<(&Transform, &Wall), Without<Tank>>,
 ) {
     for (mut transform, tank) in &mut tanks_query {
-        move_tank(&mut commands, &keys, &mut transform, tank, &mut meshes, &mut materials, &time);
+        move_tank(&mut commands, &keys, &mut transform, tank, &mut meshes, &mut materials, &time, &walls_query);
     }
 }
 
@@ -678,30 +704,15 @@ fn apply_velocity(
 
 // Circle with rectangle
 
-// Vec2 Rotate(Vec2 point, float angle, Vec2 center_of_rotation)
-// {
-//     float sinus   = sin(angle)
-//     float cosinus = cos(angle);
-//     Vec2 temp;
-
-//     point  = point - center_of_rotation;
-//     temp.x = point.x * cosinus - point.y * sinus;
-//     temp.y = point.x * sinus   + point.y * cosinus;
-//     point  =  temp + center_of_rotation;
-
-//     return point;
-// }
-
-fn rotate_point(point: Vec2, angle: f32, rot_center: Vec2) -> Vec2 {
-    let temp = point - rot_center;
+fn rotate_point(point: &Vec2, angle: &f32, rot_center: &Vec2) -> Vec2 {
+    let temp = *point - *rot_center;
 
     let temp2 = Vec2::new(
         temp.x * angle.cos() - temp.y * angle.sin(),
     temp.x * angle.sin() + temp.y * angle.cos());
     
-    return temp2 + rot_center;
+    return temp2 + *rot_center;
 }
-
 
 fn circle_intersects_rect(
     rect_center: Vec2,
@@ -710,7 +721,7 @@ fn circle_intersects_rect(
     circle_center: Vec2,
     circle_rad: f32,
 ) -> bool {
-    let circle_center_rot = rotate_point(circle_center, rect_angle, rect_center);
+    let circle_center_rot = rotate_point(&circle_center, &rect_angle, &rect_center);
 
     let circle_dist = Vec2::new(
         (circle_center_rot.x - rect_center.x).abs(),
@@ -761,6 +772,48 @@ fn circle_intersects_wall_bounce(
     }
 }
 
+fn line_intersects_line(
+    (x1, y1, x2, y2): (f32,f32,f32,f32),
+    (x3, y3, x4, y4): (f32,f32,f32,f32),
+) -> bool {
+    let u_a = ((x4-x3)*(y1-y3) - (y4-y3)*(x1-x3)) / ((y4-y3)*(x2-x1) - (x4-x3)*(y2-y1));
+    let u_b = ((x2-x1)*(y1-y3) - (y2-y1)*(x1-x3)) / ((y4-y3)*(x2-x1) - (x4-x3)*(y2-y1));
+
+    u_a >= 0.0 && u_a <= 1.0 && u_b >= 0.0 && u_b <= 1.0
+}
+
+fn rectangle_intersects_line(
+    rect: (f32,f32,f32,f32,f32,f32,f32,f32),
+    line: (f32,f32,f32,f32),
+) -> bool {
+    let (x1,y1,x2,y2,x3,y3,x4,y4) = rect;
+
+    let left = line_intersects_line(line, (x1,y1,x2,y2));
+    let right = line_intersects_line(line, (x2,y2,x3,y3));
+    let top = line_intersects_line(line, (x3,y3,x4,y4));
+    let bottom = line_intersects_line(line, (x4,y4,x1,y1));
+
+    left || right || top || bottom
+}
+
+fn rect_to_8_f23(transform: Transform) -> (f32,f32,f32,f32,f32,f32,f32,f32) {
+    let horz_offset = transform.scale.x / 2.0;
+    let vert_offset = transform.scale.y / 2.0;
+    let angle = transform.rotation.to_euler(EulerRot::ZYX).0;
+    let center_vec2 = Vec2::new(transform.translation.x, transform.translation.y);
+
+    let p1 = Vec2::new(center_vec2.x - horz_offset, center_vec2.y - vert_offset);
+    let p2 = Vec2::new(center_vec2.x + horz_offset, center_vec2.y - vert_offset);
+    let p3 = Vec2::new(center_vec2.x - horz_offset, center_vec2.y + vert_offset);
+    let p4 = Vec2::new(center_vec2.x + horz_offset, center_vec2.y + vert_offset);
+
+    let Vec2{x:x1,y:y1} = rotate_point(&p1, &angle, &center_vec2);
+    let Vec2{x:x2,y:y2} = rotate_point(&p2, &angle, &center_vec2);
+    let Vec2{x:x3,y:y3} = rotate_point(&p3, &angle, &center_vec2);
+    let Vec2{x:x4,y:y4} = rotate_point(&p4, &angle, &center_vec2);
+
+    (x1,y1,x2,y2,x3,y3,x4,y4)
+}
 
 
 fn bullet_wall_collision_handler(
@@ -790,9 +843,13 @@ fn bullet_wall_collision_handler(
 
 
 fn bullet_tank_collision_handler(
-
+    mut bullets_query: Query<&Transform, With<Bullet>>,
+    mut tanks_query: Query<&mut Transform, With<Tank>>,
 ) {
 
+
+    // all this should do is hide the dead tank, wait 3 secs, and send restart
+    //  signal
 }
 
 
