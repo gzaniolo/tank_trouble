@@ -4,7 +4,14 @@
 
 use bevy::
 { 
-    input::{keyboard::{Key, KeyboardInput}, ButtonState}, prelude::*, reflect::List, sprite::{MaterialMesh2dBundle, Mesh2dHandle}, utils::hashbrown::HashMap
+    input::{keyboard::{Key, KeyboardInput}, ButtonState}, 
+    prelude::*, 
+    reflect::List, 
+    sprite::{MaterialMesh2dBundle, Mesh2dHandle}, 
+    utils:: {
+        hashbrown::HashMap,
+        Duration,
+    }
 };
 
 use core::f32::consts::*;
@@ -61,6 +68,7 @@ const BULLET_COLOR: Color = Color::GRAY;
 const BULLET_RADIUS: f32 = 5.0;
 // const BULLET_LIFETIME TODO
 const BULLET_SPEED: f32 = 72.0;
+const BULLET_WALL_COOLDOWN: f32 = 0.5;
 
 
 #[derive(Component, Deref, DerefMut)]
@@ -87,7 +95,10 @@ struct TankBundle {
 
 // TODO bullet has limited lifetime
 #[derive(Component)]
-struct Bullet;
+struct Bullet {
+    vert_cooldown: Duration,
+    horz_cooldown: Duration,
+}
 
 #[derive(Bundle)]
 struct BulletBundle {
@@ -99,7 +110,9 @@ struct BulletBundle {
 }
 
 #[derive(Component)]
-struct Wall;
+struct Wall {
+    is_vertical: bool,
+}
 
 #[derive(Bundle)]
 struct WallBundle {
@@ -136,7 +149,7 @@ fn main() {
     //  startup
     .add_systems(Update, (clear_prev_round,create_fresh_round).chain())
     .add_systems(Update, handle_keypresses)
-    .add_systems(Update, apply_velocity)
+    .add_systems(Update, (bullet_wall_collision_handler, apply_velocity).chain())
     .run()
 }
 
@@ -489,7 +502,9 @@ fn create_fresh_round(
             // if true {
                 commands.spawn(
                     WallBundle {
-                        wall: Wall,
+                        wall: Wall {
+                            is_vertical: false,
+                        },
                         sprite: SpriteBundle {
                             transform: Transform {
                                 translation: Vec3::new(x_pos,y_pos,0.0),
@@ -518,7 +533,9 @@ fn create_fresh_round(
             if vert_fun() {
                 commands.spawn(
                     WallBundle {
-                        wall: Wall,
+                        wall: Wall {
+                            is_vertical: true,
+                        },
                         sprite: SpriteBundle {
                             transform: Transform {
                                 translation: Vec3::new(x_pos,y_pos,0.0),
@@ -575,13 +592,17 @@ fn shoot_bullet(
     let circ_mesh = Mesh2dHandle(meshes.add(Circle { radius: BULLET_RADIUS }));
     let color_material = materials.add(BULLET_COLOR);
 
+    // TODO could potentially be redone to use rotating point api
     let start_x = tank_pos.x + angle.cos() * ((TANK_SIZE.x / 2.0) + BULLET_RADIUS);
     let start_y = tank_pos.y + angle.sin() * ((TANK_SIZE.x / 2.0) + BULLET_RADIUS);
 
     // TODO turn this into a ball?
     commands.spawn(
         BulletBundle {
-            bullet: Bullet {},
+            bullet: Bullet {
+                vert_cooldown: Duration::from_secs(0),
+                horz_cooldown: Duration::from_secs(0),
+            },
             sprite: MaterialMesh2dBundle {
                 mesh: circ_mesh,
                 material: color_material,
@@ -654,6 +675,194 @@ fn apply_velocity(
         transform.translation.y += velocity.y * time.delta_seconds();
     }
 }
+
+
+
+// Collision functions
+
+// TODO derive rectangle hitbox
+
+// Circle with rectangle
+
+// Vec2 Rotate(Vec2 point, float angle, Vec2 center_of_rotation)
+// {
+//     float sinus   = sin(angle)
+//     float cosinus = cos(angle);
+//     Vec2 temp;
+
+//     point  = point - center_of_rotation;
+//     temp.x = point.x * cosinus - point.y * sinus;
+//     temp.y = point.x * sinus   + point.y * cosinus;
+//     point  =  temp + center_of_rotation;
+
+//     return point;
+// }
+
+fn rotate_point(point: Vec2, angle: f32, rot_center: Vec2) -> Vec2 {
+    let temp = point - rot_center;
+
+    let temp2 = Vec2::new(
+        temp.x * angle.cos() - temp.y * angle.sin(),
+    temp.x * angle.sin() + temp.y * angle.cos());
+    
+    return temp2 + rot_center;
+}
+
+#[derive(Debug, PartialEq)]
+enum RectSide {
+    NoIntersect,
+    TopLeft,
+    Top,
+    TopRight,
+    Right,
+    BottomRight,
+    Bottom,
+    BottomLeft,
+    Left,
+}
+
+fn circle_intersects_rect(
+    rect_center: Vec2,
+    rect_dims: Vec2,
+    rect_angle: f32,
+    circle_center: Vec2,
+    circle_rad: f32,
+) -> bool {
+    let circle_center_rot = rotate_point(circle_center, rect_angle, rect_center);
+
+    let circle_dist = Vec2::new(
+        (circle_center_rot.x - rect_center.x).abs(),
+        (circle_center_rot.y - rect_center.y).abs());
+
+    if circle_dist.x > (rect_dims.x/2.0) + circle_rad {return false}
+
+    if circle_dist.y > (rect_dims.y/2.0) + circle_rad {return false}
+
+    if circle_dist.x <= (rect_dims.x/2.0) {return true}
+
+    if circle_dist.y <= (rect_dims.y/2.0) {return true}
+
+    let corner_distance_sq = (circle_dist.x - (rect_dims.x/2.0)).powf(2.0) + 
+        (circle_dist.y - (rect_dims.y/2.0)).powf(2.0);
+    
+    return corner_distance_sq <= circle_rad.powf(2.0);
+}
+
+fn circle_intersects_wall_side(
+    rect_center: Vec2,
+    rect_dims: Vec2,
+    rect_angle: f32,
+    circle_center: Vec2,
+    circle_rad: f32,
+) -> RectSide {
+    let circle_center_rot = rotate_point(circle_center, rect_angle, rect_center);
+
+    let circle_dist = Vec2::new(
+        circle_center_rot.x - rect_center.x,
+        circle_center_rot.y - rect_center.y);
+
+    
+    if circle_dist.x.abs() > (rect_dims.x/2.0) + circle_rad {return RectSide::NoIntersect}
+
+    if circle_dist.y.abs() > (rect_dims.y/2.0) + circle_rad {return RectSide::NoIntersect}
+
+
+    // NOTE: putting y before x is a shitty hack that only works becuase walls
+    //  are far thinner than they are wide. 
+    if circle_dist.y.abs() <= (rect_dims.y/2.0) {
+        if circle_dist.x < 0.0 {return RectSide::Left}
+        else {return RectSide::Right}
+    }
+
+    if circle_dist.x.abs() <= (rect_dims.x/2.0) {
+        if circle_dist.y < 0.0 {return RectSide::Bottom}
+        else {return RectSide::Top}
+    }
+
+    let corner_distance_sq = (circle_dist.x.abs() - (rect_dims.x/2.0)).powf(2.0) + 
+        (circle_dist.y.abs() - (rect_dims.y/2.0)).powf(2.0);
+    
+    if corner_distance_sq <= circle_rad.powf(2.0) {
+        if circle_dist.x < 0.0 {
+            if circle_dist.y < 0.0 {return RectSide::TopLeft} 
+            else {return RectSide::BottomLeft}
+        } else {
+            if circle_dist.y < 0.0 {return RectSide::TopRight}
+            else {return RectSide::BottomRight}
+        }
+    } else {
+        return RectSide::NoIntersect
+    }
+}
+
+fn bullet_cooldown_handler(
+    mut bullets_query: Query<&mut Bullet>,
+    time: &Res<Time>,
+) {
+    for mut bullet in &mut bullets_query {
+        bullet.horz_cooldown -= time.delta();
+        bullet.vert_cooldown -= time.delta();
+    }
+}
+
+fn bullet_wall_collision_handler(
+    walls_query: Query<(&Transform, &Wall)>,
+    mut bullets_query: Query<(&Transform, &mut Velocity, &mut Bullet)>,
+) {
+    for (bullet_trans, mut bullet_velo, mut bullet) in &mut bullets_query {
+        for (wall_trans, wall) in &walls_query {
+            let temp = circle_intersects_wall_side(
+                Vec2::new(wall_trans.translation.x, wall_trans.translation.y),
+                Vec2::new(wall_trans.scale.x, wall_trans.scale.y),
+                wall_trans.rotation.to_euler(EulerRot::ZYX).0,
+                Vec2::new(bullet_trans.translation.x, bullet_trans.translation.y), 
+                BULLET_RADIUS);
+            if temp != RectSide::NoIntersect {
+                println!("intersected direction {:?}",temp);
+            }
+            
+            // Note: Another shitty hack because I forgot we rotated the walls
+            match temp {
+                RectSide::NoIntersect => {},
+                RectSide::Top|RectSide::Bottom => {
+                        if bullet.vert_cooldown <= Duration::from_secs(0) {
+                            if wall.is_vertical {bullet_velo.x = -bullet_velo.x;}
+                            else {bullet_velo.y = -bullet_velo.y;}
+                            bullet.vert_cooldown = Duration::from_millis(500);
+                        }
+                    },
+                RectSide::Right|RectSide::Left => {
+                        if bullet.horz_cooldown <= Duration::from_secs(0) {
+                            if wall.is_vertical {bullet_velo.y = -bullet_velo.y;}
+                            else {bullet_velo.x = -bullet_velo.x;}
+                            bullet.horz_cooldown = Duration::from_millis(500);
+                        }
+                    },
+                RectSide::TopLeft|RectSide::TopRight|
+                RectSide::BottomRight|RectSide::BottomLeft => {
+                        bullet_velo.x = -bullet_velo.x;bullet_velo.y = -bullet_velo.y;
+                        bullet.horz_cooldown = Duration::from_millis(500);
+                        bullet.vert_cooldown = Duration::from_millis(500);
+                    },
+            }
+            
+        }
+    }
+}
+
+
+fn bullet_tank_collision_handler(
+
+) {
+
+}
+
+
+
+
+
+
+
 
 
 
